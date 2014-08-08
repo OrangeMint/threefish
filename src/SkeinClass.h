@@ -9,9 +9,9 @@
 
 #include "skeinApi.h"
 
+
 class SkeinClass;
 static std::ostream &operator<<(std::ostream &out, SkeinClass &skein);
-
 
 class SkeinClass
 {
@@ -23,23 +23,19 @@ public:
   uint8_t* getHash();
   int getSkeinStateBytes();
   ~SkeinClass();
-  void printHash();
-
 
 private:
   int skeinStateBytes;
   SkeinCtx_t ctx;
-  SkeinSize_t skeinSize;
   uint8_t *hash = nullptr;
 }; 
 
-static std::ostream &operator<<(std::ostream &out, SkeinClass &skein)
+std::ostream &operator<<(std::ostream &out, SkeinClass &skein)
 {
   int size = skein.getSkeinStateBytes();
   uint8_t *temp = skein.getHash();
   out << std::setw(2) << std::setfill('0') << std::setbase(16);
   for (int i = 0; i < size; i++) {
-    //printf("%02x", temp[i]);
     out << static_cast<int>(temp[i]);
   }
   out << std::setw(0) << std::setfill(' ') << std::setbase(10);
@@ -47,4 +43,5 @@ static std::ostream &operator<<(std::ostream &out, SkeinClass &skein)
 }
 
 typedef SkeinClass Skein;
+
 #endif //SKEIN_CLASS_H

@@ -40,13 +40,6 @@ uint8_t* SkeinClass::getHash()
   return hash;
 }
 
-void SkeinClass::printHash()
-{
-  for (int i = 0; i < skeinStateBytes; i++) {
-    printf("%02x", hash[i]);
-  }
-}
-
 SkeinClass::~SkeinClass()
 {
   delete[] hash;
