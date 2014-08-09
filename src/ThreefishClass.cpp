@@ -8,6 +8,35 @@ enum threefishType{
 };
 */
 
+void threadEncrypt(ThreefishKey_t &keyCtx, uint8_t *in, uint8_t *out, uint64_t size, size_t count, int skeinBlockBytes)
+{
+  uint8_t *threadCrypt = new uint8_t[skeinBlockBytes];
+  uint8_t *threadDecrypt = new uint8_t[skeinBlockBytes];
+
+  for (uint64_t i = 0; i < size; i += skeinBlockBytes) {
+    memcpy(threadDecrypt, in + (count * size) + i, skeinBlockBytes);
+    threefishEncryptBlockBytes(&keyCtx, threadDecrypt, threadCrypt);
+    memcpy(out + (count * size) + i, threadCrypt, skeinBlockBytes);
+  }
+  delete[] threadCrypt;
+  delete[] threadDecrypt;
+}
+
+void threadDecrypt(ThreefishKey_t &keyCtx, uint8_t *in, uint8_t *out, uint64_t size, size_t count, int skeinBlockBytes)
+{
+  uint8_t *threadCrypt = new uint8_t[skeinBlockBytes];
+  uint8_t *threadDecrypt = new uint8_t[skeinBlockBytes];
+
+  for (uint64_t i = 0; i < size; i += skeinBlockBytes) {
+    memcpy(threadCrypt, in + (count * size) + i, skeinBlockBytes);
+    threefishDecryptBlockBytes(&keyCtx, threadCrypt, threadDecrypt);
+    memcpy(out + (count * size) + i, threadDecrypt, skeinBlockBytes);
+  }
+  delete[] threadCrypt;
+  delete[] threadDecrypt;
+}
+
+
 Threefish::Threefish(const std::string &file, uint8_t *key, KeySize keySize, int IgnoreFileSize)
 {
   inputFileName = file;
@@ -33,6 +62,8 @@ Threefish::Threefish(const std::string &file, uint8_t *key, KeySize keySize, int
     break;
   }
 
+  bufIn = new uint8_t[bufSize];
+  bufOut = new uint8_t[bufSize];
   blockCrypt = new uint8_t[skeinBlockBytes];
   blockDecrypt = new uint8_t[skeinBlockBytes];
   keyHash = new uint8_t[skeinBlockBytes];
@@ -44,11 +75,18 @@ Threefish::Threefish(const std::string &file, uint8_t *key, KeySize keySize, int
   memset(tweak, 0, sizeof(*tweak) * skeinMaxStateWords);
   memset(blockCrypt, 0, sizeof(*blockCrypt) * skeinBlockBytes);
   memset(blockDecrypt, 0, sizeof(*blockDecrypt) * skeinBlockBytes);
+  memset(bufIn, 0, bufSize);
+  memset(bufOut, 0, bufSize);
 
   memcpy(this->key, key, keySize / 8);
   memcpy(this->keyHash, key, skeinBlockBytes);
   skeinCtxPrepare(&ctx, skeinSize);
   threefishSetKey(&keyCtx, threefishSize, this->key, tweak);
+
+  threadCount = std::thread::hardware_concurrency();
+  if (threadCount == 0)
+    threadCount = 2;
+  threadVector.resize(threadCount);
 }
 
 void Threefish::setInputFileName(const std::string &fileName)
@@ -82,9 +120,11 @@ void Threefish::encrypt()
   fileSize = input.tellg();
   input.clear();
   input.seekg(0, std::ios::beg);
+  /////////////////////////////////////////
   if (fileSize < 0 && ignoreFileSize == 0){
     throw ThreefishException("Error: fileSize overflowed, use IgnoreFileSize mode");
   }
+  /////////////////////////////////////////
 
   srand(time(NULL));
   random = new uint64_t((rand() % 100000 + 1) * (rand() % 100000 + 1)); //must be changed!
@@ -105,14 +145,14 @@ void Threefish::encrypt()
   if (!output.is_open()) {
     throw ThreefishException("Error: can not open output file");
   }
-  //write first block
-  output.write(reinterpret_cast<char*>(blockDecrypt), skeinBlockBytes);
+  //write first block 
+  output.write(reinterpret_cast<char*>(blockDecrypt), skeinBlockBytes); //tweak
 
   threefishSetKey(&keyCtx, threefishSize, key, tweak);
 
   //write second block
   threefishEncryptBlockBytes(&keyCtx, keyHash, blockDecrypt);
-  output.write(reinterpret_cast<char*>(blockDecrypt), skeinBlockBytes);
+  output.write(reinterpret_cast<char*>(blockDecrypt), skeinBlockBytes); //key
 
   memset(keyHash, 0, sizeof(*keyHash) * skeinBlockBytes);
   memset(blockCrypt, 0, sizeof(*blockCrypt) * skeinBlockBytes);
@@ -129,7 +169,7 @@ void Threefish::encrypt()
 
   Skein_Put64_LSB_First(blockDecrypt, inputFileName.c_str(), inputFileName.size() + 1);
   threefishEncryptBlockBytes(&keyCtx, blockDecrypt, blockCrypt);
-  output.write(reinterpret_cast<char*>(blockCrypt), skeinBlockBytes);
+  output.write(reinterpret_cast<char*>(blockCrypt), skeinBlockBytes); //file name
 
   memset(blockCrypt, 0, sizeof(*blockCrypt) * skeinBlockBytes);
   memset(blockDecrypt, 0, sizeof(*blockDecrypt) * skeinBlockBytes);
@@ -137,19 +177,36 @@ void Threefish::encrypt()
   //write fourth block
   Skein_Put64_LSB_First(blockDecrypt, (void*)&fileSize, sizeof(fileSize));
   threefishEncryptBlockBytes(&keyCtx, blockDecrypt, blockCrypt);
-  output.write(reinterpret_cast<char*>(blockCrypt), skeinBlockBytes);
+  output.write(reinterpret_cast<char*>(blockCrypt), skeinBlockBytes); //size
 
   memset(blockCrypt, 0, sizeof(*blockCrypt) * skeinBlockBytes);
   memset(blockDecrypt, 0, sizeof(*blockDecrypt) * skeinBlockBytes);
   
   while (!input.eof()) {
-    input.read(reinterpret_cast<char*>(blockCrypt), skeinBlockBytes);
+    input.read(reinterpret_cast<char*>(bufIn), bufSize);
 
-    threefishEncryptBlockBytes(&keyCtx, blockCrypt, blockDecrypt);
-    output.write(reinterpret_cast<char*>(blockDecrypt), skeinBlockBytes);
+    if (bufSize > (uint64_t)input.gcount()) {
+      for (bufCount = 0; bufCount <= (uint64_t)input.gcount(); bufCount += skeinBlockBytes) {
+        memcpy(blockDecrypt, bufIn + bufCount, skeinBlockBytes);
+        threefishEncryptBlockBytes(&keyCtx, blockDecrypt, blockCrypt);
+        memcpy(bufOut + bufCount, blockCrypt, skeinBlockBytes);
 
-    memset(blockCrypt, 0, sizeof(*blockCrypt) * skeinBlockBytes);
-    memset(blockDecrypt, 0, sizeof(*blockDecrypt) * skeinBlockBytes);
+        memset(blockCrypt, 0, sizeof(*blockCrypt) * skeinBlockBytes);
+        memset(blockDecrypt, 0, sizeof(*blockDecrypt) * skeinBlockBytes);
+      }
+      output.write(reinterpret_cast<char*>(bufOut), bufCount);
+    }
+    else {
+      for (size_t i = 0; i < threadCount; i++) {
+        std::thread t(threadEncrypt, std::ref(keyCtx), bufIn, bufOut, bufSize / threadCount, i, skeinBlockBytes);
+        threadVector[i] = (move(t));
+      }
+      for (size_t i = 0; i < threadCount; i++)
+        threadVector[i].join();
+      output.write(reinterpret_cast<char*>(bufOut), bufSize);
+    }
+    memset(bufIn, 0, bufSize);
+    memset(bufOut, 0, bufSize);
   }
 
   clear();
@@ -173,9 +230,11 @@ void Threefish::decrypt()
   input.read(reinterpret_cast<char*>(blockCrypt), skeinBlockBytes);
   threefishDecryptBlockBytes(&keyCtx, blockCrypt, blockDecrypt);
 
-  if (memcmp(keyHash, blockDecrypt, skeinBlockBytes)) {
+  if (memcmp(keyHash, blockDecrypt, skeinBlockBytes) != 0) {
+    validPassword = false;
     throw ThreefishException("Error: Invalid password");
   }
+  validPassword = true;
 
   //read third block
   input.read(reinterpret_cast<char*>(blockCrypt), skeinBlockBytes);
@@ -200,23 +259,35 @@ void Threefish::decrypt()
   }
 
   while (!input.eof()) {
-    input.read(reinterpret_cast<char*>(blockCrypt), skeinBlockBytes);
+    input.read(reinterpret_cast<char*>(bufIn), bufSize);
 
-    if (input.fail())
-      break;
-    threefishDecryptBlockBytes(&keyCtx, blockCrypt, blockDecrypt);
+    if (bufSize > (uint64_t)input.gcount()) {
+      for (bufCount = 0; bufCount <= (uint64_t)input.gcount(); bufCount += skeinBlockBytes) {
+        memcpy(blockCrypt, bufIn + bufCount, skeinBlockBytes);
+        threefishDecryptBlockBytes(&keyCtx, blockCrypt, blockDecrypt);
+        memcpy(bufOut + bufCount, blockDecrypt, skeinBlockBytes);
 
-    if (ignoreFileSize == 0) {
-      if (fileSize <= skeinBlockBytes) {
-        output.write(reinterpret_cast<char*>(blockDecrypt), fileSize);
+        memset(blockCrypt, 0, sizeof(*blockCrypt) * skeinBlockBytes);
+        memset(blockDecrypt, 0, sizeof(*blockDecrypt) * skeinBlockBytes);
+      } 
+      if (ignoreFileSize == 0) {
+        output.write(reinterpret_cast<char*>(bufOut), fileSize);
         break;
-      }
+      } 
+      output.write(reinterpret_cast<char*>(bufOut), input.gcount());
     }
-    output.write(reinterpret_cast<char*>(blockDecrypt), skeinBlockBytes);
-    fileSize -= skeinBlockBytes;
-
-    memset(blockCrypt, 0, sizeof(*blockCrypt) * skeinBlockBytes);
-    memset(blockDecrypt, 0, sizeof(*blockDecrypt) * skeinBlockBytes);
+    else {
+      for (size_t i = 0; i < threadCount; i++) {
+        std::thread t(threadDecrypt, std::ref(keyCtx), bufIn, bufOut, bufSize / threadCount, i, skeinBlockBytes);
+        threadVector[i] = (move(t));
+      }
+      for (size_t i = 0; i < threadCount; i++)
+        threadVector[i].join();
+      output.write(reinterpret_cast<char*>(bufOut), bufSize);
+      fileSize -= bufSize;
+    }
+    memset(bufIn, 0, bufSize);
+    memset(bufOut, 0, bufSize);
   }
 
   clear();
@@ -224,6 +295,8 @@ void Threefish::decrypt()
 
 void Threefish::clear()
 {
+  memset(bufIn, 0, bufSize);
+  memset(bufOut, 0, bufSize);
   memset(key, 0, sizeof(*key) * skeinMaxStateWords);
   memset(keyHash, 0, sizeof(*keyHash) * skeinBlockBytes);
   memset(tweak, 0, sizeof(*tweak) * skeinMaxStateWords);
@@ -236,9 +309,12 @@ void Threefish::clear()
 
 Threefish::~Threefish()
 {
+
   delete random;
   delete[] key;
   delete[] keyHash;
+  delete[] bufIn;
+  delete[] bufOut;
   delete[] tweak;
   delete[] blockCrypt;
   delete[] blockDecrypt;

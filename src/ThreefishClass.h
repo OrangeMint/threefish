@@ -8,9 +8,12 @@
 #include <random>
 #include <ctime>
 #include <exception>
+#include <thread>
+#include <vector>
 
 #include "skeinApi.h"
 #include "threefishApi.h"
+
 
 enum KeySize{
   key256 = Threefish256,
@@ -28,11 +31,12 @@ class ThreefishException : public std::exception
 private:
   std::string str;
 public:
-  ThreefishException(const char* exc) : std::exception()//"Threefish exception")
+  ThreefishException(const char* exc) : std::exception()//("Threefish exception")
   {
     str = exc;
   }
-  const char* what()
+  using std::exception::what;
+  virtual const char* what()
   {
     return str.c_str();
   }
@@ -41,8 +45,9 @@ public:
 class Threefish
 {
 public:
-  /*Key must be key256 = 256 bit, key512 = 512 bit or key1024 = 1024 bit*/
-  /*Use IgnoreFileSize if you have a trouble with big files on x32 platform or MinGW32*/
+  /*Key must be the same length as the cipher*/
+  /*key256 = 256 bit, key512 = 512 bit or key1024 = 1024 bit*/
+  /*Use IgnoreFileSize if you have a trouble with big files on the x32 platform or MinGW32*/
   explicit Threefish(const std::string &file, uint8_t *key, KeySize keySize, int IgnoreFileSize = 0);
   Threefish(const Threefish &) = delete;
   void setInputFileName(const std::string &);
@@ -52,6 +57,8 @@ public:
   void encrypt();
   void decrypt();
   ~Threefish();
+
+  bool validPassword;
   
 private:
   std::ifstream input;
@@ -61,7 +68,7 @@ private:
   std::string outputFileName;
   std::string tempStr;
   std::string add = ".data";
-
+   
   SkeinCtx_t ctx;
   SkeinSize_t skeinSize;
   ThreefishKey_t keyCtx;
@@ -73,6 +80,13 @@ private:
   uint64_t fileSize;
   int ignoreFileSize;
 
+  uint64_t bufSize = 102400000;
+  uint64_t bufCount = 0;
+  std::vector<std::thread> threadVector;
+  size_t threadCount;
+
+  uint8_t *bufIn = nullptr;
+  uint8_t *bufOut = nullptr;
   uint8_t *blockCrypt = nullptr;
   uint8_t *blockDecrypt = nullptr;
   uint8_t *keyHash = nullptr;
@@ -80,7 +94,7 @@ private:
   uint64_t *tweak = nullptr;
   uint64_t *random = nullptr;
 
-
   void clear();
 };
+
 #endif //THREEFISH_CLASS_H
